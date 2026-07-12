@@ -8,6 +8,7 @@ photos into a flat ./foto folder (named with uuid4), and writes listings.json.
 
 Field NAMES are English; field VALUES are kept in the original language.
 """
+import hashlib
 import json
 import random
 import re
@@ -337,6 +338,76 @@ def parse_entities(soup):
     return out
 
 
+def review_id(subject_type, subject_slug, rv):
+    """Stable review id: the same review yields the same id on every re-scrape.
+
+    house.kg gives reviews no id of their own, so we mint one — but it must be a
+    HASH, not a uuid4: a fresh uuid on every run would churn the keys and break
+    joins and version diffs between dataset refreshes.
+    """
+    key = "|".join([
+        subject_type,
+        subject_slug or "",
+        rv.get("user_id") or "",
+        rv.get("date_raw") or "",
+        (rv.get("text") or "")[:200],
+    ])
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
+
+REVIEW_CAP = 20  # house.kg never renders more than 20 reviews (see DATASET.md §7)
+
+
+def flatten_entity(e):
+    """Entity row with its rating INLINE (rating is 1:1 — a ratings table would
+    be a join for nothing). The star histogram becomes flat rating_5..rating_1.
+
+    `reviews_count` is what the SITE claims; `reviews_scraped` is what we could
+    actually read. They differ for two distinct reasons, and both are recorded
+    rather than hidden:
+      * hard cap — the site renders at most 20 reviews and offers no way to load
+        more (no pagination, no ajax endpoint), so a 38-review agency yields 20;
+      * rating-only entries — a user can leave stars without writing any text, so
+        the count includes ratings that have no review body at all.
+    """
+    dist = e.get("rating_distribution") or {}
+    scraped = len(e.get("reviews") or [])
+    count = e.get("reviews_count")
+    row = {
+        "slug": e["slug"],
+        "kind": e.get("kind"),
+        "name": e.get("name"),
+        "url": e.get("url"),
+        "pars_date": e.get("pars_date"),
+        "rating": e.get("rating"),
+        "reviews_count": count,        # as reported by the site
+        "reviews_scraped": scraped,    # what we actually got
+        "reviews_truncated": bool(count and scraped >= REVIEW_CAP and count > scraped),
+    }
+    for star in ("5", "4", "3", "2", "1"):
+        row[f"rating_{star}"] = dist.get(star)
+    return row
+
+
+def split_reviews(entities, kind):
+    """Nested entity reviews -> flat rows for the standalone `reviews` table."""
+    out = []
+    for e in entities:
+        for rv in e.get("reviews") or []:
+            out.append({
+                "review_id": review_id(kind, e["slug"], rv),
+                "subject_type": kind,             # company | complex
+                "subject_slug": e["slug"],
+                "user_id": rv.get("user_id"),
+                "author": rv.get("author"),
+                "rating": rv.get("rating"),
+                "text": rv.get("text"),
+                "date_raw": rv.get("date_raw"),
+                "date": rv.get("date"),
+            })
+    return out
+
+
 def parse_user_profile(user_id, now=None):
     """Crawl /user/<hash> -> the users table row.
 
@@ -356,7 +427,12 @@ def parse_user_profile(user_id, now=None):
 
     registered_raw = None
     if info:
-        m = re.search(r"на House\.kg с ([^|]+)", info.get_text(" ", strip=True))
+        # the block runs on into UI text ("...12 января 2023 Написать Пожаловаться"),
+        # so take just the date itself rather than everything after "с"
+        m = re.search(
+            r"на House\.kg с\s+(\d{1,2}\s+[а-яё]+\s+\d{4})",
+            info.get_text(" ", strip=True), re.I,
+        )
         if m:
             registered_raw = m.group(1).strip()
 

@@ -142,15 +142,17 @@ def main():
         cplx_slugs, "complex", lambda s: f"{S.BASE}/jilie-kompleksy/{s}", N_WORKERS
     )
 
+    # reviews -> their own table (1:N, the unit of analysis, same shape for both
+    # entity kinds). Ratings stay INLINE on the entity: a rating is 1:1, so a
+    # separate ratings table would be a join for nothing.
+    reviews = S.split_reviews(companies, "company") + S.split_reviews(complexes, "complex")
+    companies = [S.flatten_entity(c) for c in companies]
+    complexes = [S.flatten_entity(c) for c in complexes]
+
     # users = listing authors UNION review authors — both live in /user/<hash>,
     # so a person who posts ads and also writes reviews is one row, not two.
     ad_authors = {r["author_user_id"] for r in listings if r["author_user_id"]}
-    reviewers = {
-        rv["user_id"]
-        for ent in companies + complexes
-        for rv in ent["reviews"]
-        if rv.get("user_id")
-    }
+    reviewers = {rv["user_id"] for rv in reviews if rv.get("user_id")}
     user_ids = sorted(ad_authors | reviewers)
     log(f"      users: {len(ad_authors)} ad authors + {len(reviewers)} reviewers "
         f"-> {len(user_ids)} unique")
@@ -169,6 +171,7 @@ def main():
         ("users.json", users),
         ("companies.json", companies),
         ("complexes.json", complexes),
+        ("reviews.json", reviews),
     ]:
         (OUT / name).write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -177,7 +180,10 @@ def main():
     total = time.perf_counter() - t_start
     photos = sum(len(r["foto_ids"]) for r in listings)
     mb = sum(f.stat().st_size for f in S.FOTO_DIR.iterdir()) / 1e6
-    revs = sum(len(c["reviews"]) for c in companies + complexes)
+    revs = len(reviews)
+    # does the profile page truncate reviews like the ad page does (cap 20)?
+    trunc = [c for c in companies + complexes
+             if c["reviews_count"] and c["reviews_scraped"] < c["reviews_count"]]
 
     mism = sum(1 for r in listings if r.get("seller_mismatch"))
     log("\n" + "=" * 64)
@@ -186,8 +192,11 @@ def main():
         f"rent {sum(1 for r in listings if r['deal']=='rent')})")
     log(f"users      : {len(users)}   companies: {len(companies)}   "
         f"complexes: {len(complexes)}")
-    log(f"reviews    : {revs} (deduplicated, from entity pages)")
+    log(f"reviews    : {revs} (own table, deduplicated, from entity pages)")
     log(f"declared!=actual seller: {mism}")
+    log(f"entities with truncated reviews (count > scraped): {len(trunc)}"
+        + (f"  e.g. {trunc[0]['slug']} {trunc[0]['reviews_scraped']}/{trunc[0]['reviews_count']}"
+           if trunc else ""))
     log(f"photos     : {photos}  ({mb:.0f} MB)")
     log(f"time       : listings {t_listings:.0f}s + entities {t_entities:.0f}s "
         f"= {total:.0f}s total")

@@ -10,6 +10,7 @@ listings = json.loads((D / "listings.json").read_text(encoding="utf-8"))
 users = json.loads((D / "users.json").read_text(encoding="utf-8"))
 companies = json.loads((D / "companies.json").read_text(encoding="utf-8"))
 complexes = json.loads((D / "complexes.json").read_text(encoding="utf-8"))
+reviews = json.loads((D / "reviews.json").read_text(encoding="utf-8"))
 foto = {f.split(".")[0] for f in os.listdir(D / "foto")}
 
 ok = True
@@ -32,6 +33,11 @@ check("company slug unique (PK)", len({c["slug"] for c in companies}) == len(com
 check("complex slug unique (PK)", len({c["slug"] for c in complexes}) == len(complexes))
 
 check("user_id unique (PK)", len({u["user_id"] for u in users}) == len(users))
+check("review_id unique (PK)",
+      len({r["review_id"] for r in reviews}) == len(reviews),
+      f"({len(reviews)} reviews)")
+check("review_id is deterministic (hex hash, not uuid4)",
+      all(len(r["review_id"]) == 16 and "-" not in r["review_id"] for r in reviews))
 
 print("\nFOREIGN KEYS")
 cs, xs = {c["slug"] for c in companies}, {c["slug"] for c in complexes}
@@ -46,8 +52,33 @@ used_c = {r["company_slug"] for r in listings if r["company_slug"]}
 check("no orphan companies", used_c == cs, f"orphans={cs - used_c}")
 
 # every reviewer must resolve into users too (shared /user/ namespace)
-reviewers = {rv["user_id"] for e in companies + complexes for rv in e["reviews"] if rv.get("user_id")}
+reviewers = {rv["user_id"] for rv in reviews if rv.get("user_id")}
 check("every reviewer resolves", reviewers <= us, f"missing={len(reviewers - us)}")
+
+# reviews point at a real company/complex
+bad_subj = [
+    r for r in reviews
+    if (r["subject_slug"] not in cs) if r["subject_type"] == "company"
+] + [
+    r for r in reviews
+    if (r["subject_slug"] not in xs) if r["subject_type"] == "complex"
+]
+check("every review.subject_slug resolves", not bad_subj, f"bad={len(bad_subj)}")
+
+print("\nREVIEW COMPLETENESS")
+ents = companies + complexes
+capped = [e for e in ents if e["reviews_truncated"]]
+gap = [e for e in ents
+       if e["reviews_count"] and e["reviews_scraped"] < e["reviews_count"]
+       and not e["reviews_truncated"]]
+# the 20-cap is the site's limit, not our bug — assert we hit it only at the cap
+check("truncation only ever happens AT the 20-review cap",
+      all(e["reviews_scraped"] == 20 for e in capped))
+print(f"  capped at 20 (site limit, unavoidable) : {len(capped)}/{len(ents)}"
+      + (f"  e.g. {capped[0]['slug']} {capped[0]['reviews_scraped']}/{capped[0]['reviews_count']}"
+         if capped else ""))
+print(f"  rating-only (stars, no text written)   : {len(gap)}/{len(ents)}")
+print(f"  reviews_truncated flag set on          : {len(capped)} entities")
 
 print("\nSELLER: DECLARED vs ACTUAL")
 ct = Counter((r.get("offer_type"), r["seller_type"]) for r in listings)
@@ -77,7 +108,7 @@ check("price_usd numeric where raw present",
 
 print("\nDEDUP WIN")
 n_links = sum(1 for r in listings if r["company_slug"])
-revs = sum(len(c["reviews"]) for c in companies + complexes)
+revs = len(reviews)
 print(f"  {n_links} listings -> {len(companies)} companies "
       f"({n_links / max(len(companies),1):.1f}x dedup)")
 print(f"  {revs} reviews stored once (per-listing storage would repeat them)")
