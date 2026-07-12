@@ -1,0 +1,95 @@
+# house.kg scraper configuration.
+#
+# Every key is optional — omit one and the documented default applies.
+# See house_kg/config.py for the full schema (it is typed, and a typo here fails
+# loudly rather than being silently ignored).
+
+# ---------------------------------------------------------------------------
+# What to crawl
+# ---------------------------------------------------------------------------
+scope:
+  # Deal types. Both by default.
+  deals:
+    - sale
+    - rent
+
+  # Property types. Comment one out to exclude it.
+  property_types:
+    - apartment
+    - house
+    - commercial
+    - room
+    - land
+    - dacha
+    - parking_garage
+
+  # Regions of Kyrgyzstan. All seven by default — comment out to disable.
+  # Only these exist: the site's other regions are foreign countries
+  # (Russia, Kazakhstan, UAE, ...) and are deliberately unsupported.
+  regions:
+    - chui         # Chui oblast / Bishkek — ~92% of the whole board
+    - issyk_kul
+    - talas
+    - naryn
+    - jalal_abad
+    - osh
+    - batken
+
+  # Stop after N listings. null = crawl everything (~26,000).
+  max_listings: null
+
+  # Cap pages per (deal × type × region) stream. null = follow to the last page.
+  max_pages_per_stream: null
+
+# ---------------------------------------------------------------------------
+# HTTP
+# ---------------------------------------------------------------------------
+http:
+  # 10 workers keeps house.kg happy (no 429s observed) and is ~30x faster than
+  # serial. Raising this buys little and risks throttling.
+  workers: 10
+  timeout: 30
+  max_retries: 4
+  delay: 0.0        # extra pause per request inside a worker
+
+# ---------------------------------------------------------------------------
+# Photos
+# ---------------------------------------------------------------------------
+photos:
+  enabled: true
+  workers: 10
+  max_per_listing: null   # null = download all (~9 per listing on average)
+
+# ---------------------------------------------------------------------------
+# Where scraped data lands (relative to this file)
+# ---------------------------------------------------------------------------
+storage:
+  root: data
+  raw_dirname: raw          # JSONL tables
+  photos_dirname: photos    # image files
+  state_dirname: state
+
+# ---------------------------------------------------------------------------
+# HuggingFace dataset
+# ---------------------------------------------------------------------------
+dataset:
+  output_dir: hf_dataset
+  include_photos: true
+  # Photos are embedded as a HF `Image` feature and split into shards of this
+  # size, rather than shipped as ~230k loose files.
+  max_shard_size: 500MB
+
+  hub:
+    push: true             # true -> upload after building
+    repo_id: aiacademy-kg/house_kg_full_dataset           # e.g. "your-username/house-kg"
+    private: false
+    token_env: HF_TOKEN     # token comes from the env / `hf auth login`
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging:
+  level: INFO
+  dirname: logs
+  progress: true    # rich multi-track progress bars
+  color: true

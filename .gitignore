@@ -2,3 +2,10 @@ venv/
 foto/
 __pycache__/
 *.json
+*.jsonl
+logs/
+*.log
+data/
+hf_dataset/
+.ruff_cache/
+house_kg.egg-info/
