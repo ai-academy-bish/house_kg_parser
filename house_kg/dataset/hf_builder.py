@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from datasets import Dataset, Features, Image, Value
+from huggingface_hub import HfApi
 
 from ..config import Config
 from ..logging_utils import ProgressTracker, get_logger
@@ -189,24 +190,48 @@ class HFDatasetBuilder:
             shutil.copy(docs, self.out_dir / "DATASET_GUIDE.md")
 
     def _push(self, counts: dict[str, int]) -> None:
+        """Upload `hf_dataset/` to the Hub verbatim.
+
+        We deliberately do NOT use `Dataset.push_to_hub` per config. That method
+        invents its own file layout (`<config>/train/0000.parquet`) *and* rewrites
+        the repo README with configs pointing at it — which then disagrees with the
+        card we wrote (`data/<config>.parquet`). The result is a repo whose README
+        advertises files that do not exist, and a viewer that 404s with
+        "Object at location photos/train/0000.parquet not found".
+
+        The folder we built is already a complete, self-consistent dataset repo:
+        the parquet files and the README's `configs:` paths refer to each other.
+        Uploading it as-is keeps them in sync, preserves the dataset card and the
+        guide, and avoids re-reading and re-embedding ~46 GB of images.
+        """
         hub = self.config.dataset.hub
         if not hub.repo_id:
             raise ValueError("dataset.hub.push is true but hub.repo_id is not set")
 
-        logger.info("pushing to https://huggingface.co/datasets/%s", hub.repo_id)
-        for name in (*TABLE_SUBSETS, "photos"):
-            if not counts.get(name):
-                continue
-            files = sorted((self.out_dir / "data").glob(f"{name}*.parquet"))
-            dataset = Dataset.from_parquet([str(f) for f in files])
-            dataset.push_to_hub(
-                hub.repo_id,
-                config_name=name,
-                private=hub.private,
-                token=hub.token,
-                max_shard_size=self.config.dataset.max_shard_size,
-            )
-            logger.info("  pushed subset %s (%d rows)", name, counts[name])
+        api = HfApi(token=hub.token)
+        api.create_repo(
+            repo_id=hub.repo_id,
+            repo_type="dataset",
+            private=hub.private,
+            exist_ok=True,
+        )
+
+        files = sorted(self.out_dir.rglob("*"))
+        total_mb = sum(f.stat().st_size for f in files if f.is_file()) / 1e6
+        logger.info(
+            "pushing %d subsets (%.0f MB) to https://huggingface.co/datasets/%s",
+            len([n for n in counts if counts[n]]), total_mb, hub.repo_id,
+        )
+
+        api.upload_folder(
+            folder_path=str(self.out_dir),
+            repo_id=hub.repo_id,
+            repo_type="dataset",
+            commit_message=f"Add house.kg dataset ({counts.get('listings', 0)} listings)",
+        )
+        logger.info(
+            "[bold green]pushed[/] -> https://huggingface.co/datasets/%s", hub.repo_id
+        )
 
 
 def _parse_size(text: str) -> int:

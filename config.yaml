@@ -36,7 +36,7 @@ scope:
     - batken
 
   # Stop after N listings. null = crawl everything (~26,000).
-  max_listings: null
+  max_listings: 50
 
   # Cap pages per (deal × type × region) stream. null = follow to the last page.
   max_pages_per_stream: null

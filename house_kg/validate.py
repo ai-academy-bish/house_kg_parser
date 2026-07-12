@@ -70,6 +70,18 @@ class Validator:
         logger.info("[bold]foreign keys[/]")
         company_slugs = {c["slug"] for c in companies}
         complex_slugs = {c["slug"] for c in complexes}
+
+        # Companies and complexes each key on `slug`, but they live in different URL
+        # namespaces (/<slug> vs /jilie-kompleksy/<slug>), so the same string could
+        # in principle name both. That is safe while the tables are separate — the
+        # FK is disambiguated by `reviews.subject_type` — but it would silently merge
+        # two different entities for anyone who concatenates the tables on `slug`.
+        collisions = company_slugs & complex_slugs
+        self._check(
+            "no slug collides between companies and complexes",
+            not collisions,
+            f"colliding={sorted(collisions)[:3]}" if collisions else "",
+        )
         user_ids = {u["user_id"] for u in users}
         listing_ids = {r["id"] for r in listings}
 
