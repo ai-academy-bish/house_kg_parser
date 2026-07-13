@@ -144,7 +144,17 @@ make lint     # ruff + mypy
 make test     # pytest
 ```
 
+## License
+
+This project is licensed under the **Apache License 2.0** — see [`LICENSE`](LICENSE).
+
+That licence covers **the scraper: the code, the documentation and the schema.** It does
+**not** and cannot cover the *content* it collects. Listing text and photographs on
+house.kg belong to whoever posted them; we neither own that content nor relicense it. The
+dataset is published as a compilation for research and education, and downstream users are
+responsible for their own use of the underlying material.
+
 ## Legal
 
-Scrapes only publicly visible pages, at a polite 10 concurrent requests. Intended
-for research and education. Respect house.kg's terms of service and applicable law.
+Scrapes only publicly visible pages, at a polite 10 concurrent requests. Intended for
+research and education. Respect house.kg's terms of service and applicable law.

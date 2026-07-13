@@ -95,8 +95,10 @@ Measured across all 98 (deal × type × region) combinations:
 | rent | dacha | 10 | 10 | 0 | 0 | 0 | 0 | 0 | **20** |
 | rent | parking_garage | 10 | 0 | 0 | 0 | 0 | 0 | 0 | **10** |
 
-**≈ 25,800 listings** in total (sale ≈ 21,400, rent ≈ 4,300), roughly **230,000
-photos** (~46 GB).
+**Actually crawled: 25,473 listings** (sale 21,264, rent 4,209) and **227,294 photos
+(36 GB)** — an average of **8.9 photos per ad**. The small shortfall against the
+estimate above is normal: ads expire between URL discovery and fetching (20 returned
+404), and a handful time out.
 
 > ### ⚠️ The board is overwhelmingly Bishkek
 > **~92% of all listings are in Chui/Bishkek.** Talas, Naryn and Batken have a
@@ -139,8 +141,12 @@ killed at 80% resumes at 80%; nothing is held in memory until the end.
 ### Concurrency
 
 10 threads. The work is pure network I/O, so threads (not processes) are correct —
-the GIL is released while waiting on a socket. 10 workers gave ~12,000 listings/hour
-with no throttling (`429`) observed. A full crawl takes **≈ 2.5–3 hours**.
+the GIL is released while waiting on a socket.
+
+**The full crawl took 4h 32m** (~5,600 listings/hour including all photo downloads).
+house.kg never returned a `429`; the only failures were read timeouts, of which 10
+listings exhausted their retries and were skipped. Re-running the crawler picks them
+up — resume skips the 25,473 already stored and retries only the gaps.
 
 ---
 
@@ -161,10 +167,17 @@ photos   ───── listing_id     ──→ listings
 
 ### Why reviews are a separate table
 
-A rating and its reviews **do not belong to a listing** — they belong to the
-company or the residential complex, which are shared by hundreds of listings. In a
-1,000-listing sample, ~590 listings pointed at only ~70 companies. Storing reviews
-per-listing would copy the same agency's reviews hundreds of times.
+A rating and its reviews **do not belong to a listing** — they belong to the company
+or the residential complex, which are shared by hundreds of listings. On the full
+crawl:
+
+| | listings referencing it | distinct entities | ratio |
+|---|---:|---:|---:|
+| companies | 19,640 | **179** | **110×** |
+| complexes | 9,221 | **707** | 13× |
+
+Storing reviews on the listing would copy the same agency's reviews **110 times over**
+on average. In their own table they are stored once.
 
 ### Why ratings are NOT a separate table
 
@@ -188,6 +201,18 @@ inline on the entity, with the star histogram flattened into `rating_5` … `rat
 > display names ("Кыргыз Недвижимость" is three different slugs). Keying on the
 > name would merge distinct companies.
 
+> ### ⚠️ A slug can name BOTH a company and a complex
+> `companies` and `complexes` live in **different URL namespaces** (`/<slug>` versus
+> `/jilie-kompleksy/<slug>`), so the same slug string can legitimately name one of
+> each — and does. The agency **«Дипломат»** and the residential complex
+> **«Дипломат»** are both `diplomat`.
+>
+> The dataset handles this correctly: the tables are separate, `listings.company_slug`
+> only ever points at companies, `listings.complex_slug` only at complexes, and every
+> review carries `subject_type`. **But never concatenate `companies` and `complexes`
+> and join on `slug` alone** — you would fuse an estate agency with an apartment
+> block. If you need one combined entity table, key it on `(kind, slug)`.
+
 > **`review_id` is a hash, not a uuid4.** The site gives reviews no id, so we mint
 > one — deterministically, from `(subject_type, subject_slug, user_id, date_raw,
 > text)`. A fresh uuid on each run would churn the keys and make two dataset
@@ -203,9 +228,8 @@ Two conventions hold throughout:
 
 * **Field names are English; values stay in the original Russian**, exactly as the
   site renders them. `condition` is a column name; its value is `"евроремонт"`.
-* Coverage figures come from a **1,000-listing sample** (sale + rent, all regions).
-  Fields marked *type-specific* appear only for certain property types and are too
-  rare to give a meaningful global figure.
+* Coverage figures are measured on the **full crawl of 25,473 listings** (sale + rent,
+  all regions), not on a sample.
 
 ---
 
@@ -224,13 +248,13 @@ Two conventions hold throughout:
 
 | Field | Type | Cov. | Description |
 |---|---|---:|---|
-| `deal` | str | 100% | `sale` \| `rent` |
+| `deal` | str | 100% | `sale` (21,264) \| `rent` (4,209) |
 | `type` | str | 100% | `apartment`, `house`, `commercial`, `room`, `land`, `dacha`, `parking_garage` |
 | `region` | str | 100% | `chui`, `issyk_kul`, `talas`, `naryn`, `jalal_abad`, `osh`, `batken` |
-| `city` | str | 100% | town/village, original: "Бишкек", "Ош", "Кочкорка" |
-| `address` | str | 100% | full address line, original |
+| `city` | str | 99.4% | town/village, original: "Бишкек", "Ош", "Кочкорка" |
+| `address` | str | 99.4% | full address line, original |
 | `title` | str | 100% | ad headline, original: `"3-комн. кв., 46 м2"`. **`rooms_n` and `area_m2` are parsed out of this** |
-| `description` | str | 94% | the seller's free text, original. Often the only place where terms, condition or contact preferences appear |
+| `description` | str | 94.7% | the seller's free text, original. Often the only place terms, condition or contact preferences appear |
 | `latitude` | float | 100% | from the 2GIS map widget |
 | `longitude` | float | 100% | " |
 
@@ -242,7 +266,7 @@ Two conventions hold throughout:
 | `price_kgs` | float | 100% | numeric KGS (som) |
 | `price_usd_raw` | str | 100% | original string: `"$ 198 000"`, `"$ 1 200/мес."` |
 | `price_kgs_raw` | str | 100% | original string |
-| `price_period` | str | 100% | **`total`** (sale) \| **`month`** \| **`day`** (rent). **Read §8.1 before using any price** |
+| `price_period` | str | 100% | **`total`** (21,264) \| **`month`** (3,765) \| **`day`** (444). **Read §8.1 before using any price** |
 
 #### Activity
 
@@ -251,39 +275,39 @@ Two conventions hold throughout:
 | `views` | int | 100% | view counter. The only engagement metric the site publishes — there are no likes |
 | `posted_raw` | str | 100% | as shown: `"2 месяца назад"` |
 | `posted_date` | str | 100% | absolute ISO, resolved against `pars_date` — **use this one** |
-| `upped_raw` | str | 87% | when the ad was last bumped/edited, as shown |
-| `upped_date` | str | 87% | absolute ISO. Empty for the 13% never bumped |
+| `upped_raw` | str | 92.7% | when the ad was last bumped/edited, as shown |
+| `upped_date` | str | 92.7% | absolute ISO. Empty for the 7% never bumped |
 
 #### Seller (see §6)
 
 | Field | Type | Cov. | Description |
 |---|---|---:|---|
-| `offer_type` | str | 100% | **claimed**: `"от собственника"` \| `"от агента"` |
+| `offer_type` | str | 100% | **claimed**: `"от собственника"` \| `"от агента"` (one ad states neither) |
 | `declared_owner` | bool | 100% | `offer_type` reduced to a boolean |
 | `seller_type` | str | 100% | **actual**, from the account type: `owner` \| `company` |
-| `seller_mismatch` | bool | 100% | claim ≠ reality (~4% of ads) |
-| `author_user_id` | str | 39% | FK → `users.user_id`. **Private sellers only** — company ads have no personal author |
-| `author_url` | str | 39% | the author's profile URL |
-| `author_name` | str | 100% | display name; often just `"Пользователь"` |
+| `seller_mismatch` | bool | 100% | claim ≠ reality — **true for 1,408 ads (5.5%)** |
+| `author_user_id` | str | 22.9% | FK → `users.user_id`. **Private sellers only** — company ads have no personal author |
+| `author_url` | str | 22.9% | the author's profile URL |
+| `author_name` | str | 100% | display name; often just `"Пользователь"`. Present for companies too (the company's name) |
 | `author_ads_count` | int | 100% | how many ads that author has |
-| `company_slug` | str | 60% | FK → `companies.slug` |
-| `company_url` | str | 60% | the agency's profile URL |
-| `complex_slug` | str | 13% | FK → `complexes.slug` |
-| `complex_name` | str | 13% | the complex's display name, original |
-| `complex_url` | str | 13% | the complex's profile URL |
+| `company_slug` | str | 77.1% | FK → `companies.slug`. **Most of the board is agencies** |
+| `company_url` | str | 77.1% | the agency's profile URL |
+| `complex_slug` | str | 36.2% | FK → `complexes.slug` |
+| `complex_name` | str | 36.2% | the complex's display name, original |
+| `complex_url` | str | 36.2% | the complex's profile URL |
 
 #### Derived numerics
 
 | Field | Type | Cov. | Description |
 |---|---|---:|---|
-| `rooms_n` | int | 53% | rooms, parsed from `title`. **Empty for land / parking / commercial — that is correct, they have no rooms** (§8.4). Apartments 99%, rooms 100%, houses 73% |
-| `area_m2` | float | 79% | area in m², numeric, from `title` and `area` |
+| `rooms_n` | int | 72.4% | rooms, parsed from `title`. **Empty for land / parking / commercial — that is correct, they have no rooms** (§8.4) |
+| `area_m2` | float | 86.1% | area in m², numeric, from `title` and `area` |
 
 #### Photos
 
 | Field | Type | Cov. | Description |
 |---|---|---:|---|
-| `foto_ids` | list[str] | 97% | `foto_id`s → the `photos` subset. 3% of ads have no photos at all; average ~9 |
+| `foto_ids` | list[str] | 98.5% | `foto_id`s → the `photos` subset. **8.9 photos per ad on average**; 1.5% of ads have none |
 
 #### Characteristics (from the `.info-row` table)
 
@@ -292,101 +316,93 @@ depends entirely on the property type** — a land plot has no `floor`, an apart
 has no `land_area`. Values are original strings, never parsed into numbers (except
 where a derived numeric exists above).
 
-**General**
+Coverage below is measured across the **whole board (25,473 ads)**, so a field used
+only by one property type looks "rare" even though it is near-universal *within* that
+type. Always condition on `type` before reading anything into these numbers.
 
-| Field | Cov. | Example | Notes |
-|---|---:|---|---|
-| `area` | 79% | `"4850 м2"` | numeric version: `area_m2` |
-| `condition` | 67% | `"евроремонт"` | |
-| `building` | 62% | `"кирпичный, 2009 г."` | material + year in one string |
-| `heating` | 54% | `"электрическое"` | |
-| `legal_documents` | 40% | `"красная книга"` | title deeds |
-| `floor` | 38% | `"3 этаж из 3"` | |
-| `building_series` | 34% | `"элитка"` | Soviet-era series names (`105 серия`, `хрущевка`, …) |
-| `floors_total` | 25% | `"2"` | |
-| `misc` | 25% | `"госакт"` | catch-all |
-| `security` | 22% | `"охрана, домофон"` | |
-| `ceiling_height` | 29% | `"2.5 м."` | |
-| `furniture` | 29% | `"частично меблирована"` | |
-| `bathroom` | 26% | `"совмещенный"` | |
-| `flooring` | 17% | `"ламинат"` | |
-| `entrance_door` | 13% | `"бронированная"` | |
-| `balcony` | 12% | `"нет"` | |
-| `parking` | 11% | `"рядом охраняемая стоянка"` | |
-| `layout` | *type-specific* | `"индивидуальная"` | |
-| `renovation` | *type-specific* | | |
-| `doors` | *type-specific* | | |
-| `windows` | *type-specific* | `"пластиковые"` | |
-| `object_type` | 17% | `"отели, хостелы"` | commercial only |
-| `purpose` | *type-specific* | | commercial: intended use |
-| `establishment` | *type-specific* | | commercial: venue type |
-| `structure_type` | *type-specific* | | |
-| `wall_material` | *type-specific* | | |
-| `year_built` | *type-specific* | | |
-| `finishing` | *type-specific* | | |
+**Building and condition**
+
+| Field | Cov. | Example |
+|---|---:|---|
+| `area` | 86.1% | `"4850 м2"` — numeric version: `area_m2` |
+| `building` | 81.4% | `"кирпичный, 2009 г."` — material and year in one string |
+| `condition` | 76.3% | `"евроремонт"` |
+| `floor` | 69.1% | `"3 этаж из 3"` |
+| `heating` | 65.2% | `"электрическое"` |
+| `building_series` | 64.5% | `"элитка"` — Soviet-era series (`105 серия`, `хрущевка`, …) |
+| `legal_documents` | 47.8% | `"красная книга"` — title deeds |
+| `ceiling_height` | 40.6% | `"2.5 м."` |
+| `misc` | 30.6% | `"госакт"` — catch-all |
+| `bathroom` | 30.1% | `"совмещенный"` |
+| `furniture` | 26.8% | `"частично меблирована"` |
+| `security` | 24.1% | `"охрана, домофон"` |
+| `entrance_door` | 20.2% | `"бронированная"` |
+| `balcony` | 18.0% | `"нет"` |
+| `flooring` | 17.9% | `"ламинат"` |
+| `parking` | 13.9% | `"рядом охраняемая стоянка"` |
+| `floors_total` | 13.1% | `"2"` |
+| `object_type` | 7.2% | `"отели, хостелы"` — commercial only |
 
 **Utilities**
 
 | Field | Cov. | Example |
 |---|---:|---|
-| `gas` | 18% | `"нет"` |
-| `internet` | 20% | `"оптика"` |
-| `phone_line` | 19% | `"нет"` |
-| `electricity` | 17% | `"есть"` |
-| `drinking_water` | 15% | `"центральное водоснабжение"` |
-| `sewerage` | 14% | `"септик"` |
-| `utilities` | 6% | `"свет"` |
-| `irrigation_water` | 3% | `"постоянно"` — land plots |
+| `gas` | 27.1% | `"нет"` |
+| `internet` | 20.8% | `"оптика"` |
+| `phone_line` | 18.4% | `"нет"` |
+| `electricity` | 8.6% | `"есть"` |
+| `drinking_water` | 8.3% | `"центральное водоснабжение"` |
+| `sewerage` | 7.8% | `"септик"` |
+| `utilities` | 7.8% | `"свет"` |
+| `irrigation_water` | 0.3% | `"постоянно"` — land plots only |
 
-**Land / house specific**
+**Land**
 
 | Field | Cov. | Example |
 |---|---:|---|
-| `land_area` | 53% | `"6 соток"` |
-| `house_area` | *type-specific* | |
-| `land_type` | *type-specific* | |
-| `land_legal_status` | *type-specific* | |
-| `location` | 3% | `"в пригороде"` |
+| `land_area` | 30.7% | `"6 соток"` |
+| `location` | 2.9% | `"в пригороде"` |
 
 **Sale only**
 
 | Field | Cov. | Example |
 |---|---:|---|
-| `mortgage_available` | 23% | `"есть"` |
-| `installment_available` | 12% | `"нет"` |
-| `exchange_available` | 15% | `"обмен не предлагать"` |
+| `mortgage_available` | 25.6% | `"есть"` |
+| `exchange_available` | 14.2% | `"обмен не предлагать"` |
+| `installment_available` | 12.6% | `"нет"` |
 
 **Rent only**
 
-| Field | Cov. | Example | Notes |
-|---|---:|---|---|
-| `rent_period` | 29% | `"на долгий срок"` | also `"посуточно"`, `"помесячно"` — this is what separates `price_period` `day` from `month` |
-| `deposit` | *rent* | | |
-| `prepayment` | *rent* | | |
-| `utilities_payment` | *rent* | | who pays the bills |
-| `children_allowed` | *rent* | | |
-| `pets_allowed` | *rent* | | |
+| Field | Cov. | Example |
+|---|---:|---|
+| `rent_period` | 14.4% | `"на долгий срок"`, `"посуточно"`, `"помесячно"` — this is what separates `price_period` `day` from `month`. 14.4% of the *whole board* ≈ 87% of rentals |
 
-**Raw duplicate**
+**Degenerate field**
 
 | Field | Cov. | Notes |
 |---|---:|---|
-| `rooms` | 3% | the site's own room-count characteristic, as a **string**. Almost never filled — this is exactly why `rooms_n` is parsed from the title instead. Prefer `rooms_n` |
+| `rooms` | **0.2%** | the site's own room-count characteristic, as a **string**. Effectively never filled — which is exactly why `rooms_n` is parsed from the title instead. **Use `rooms_n`, not this** |
 
 > ### The column set is open-ended
 > A characteristic whose Russian label is not in the crawler's `LABEL_MAP` is **not
 > dropped** — its label is transliterated into a latin key and it still becomes a
-> column (e.g. an unmapped `"Кол-во этажей"` would arrive as `kol_vo_etazhey`). So
-> if house.kg adds a field tomorrow, it lands in the dataset automatically, just
-> under a machine-generated name. If you see a column not listed above, that is what
-> happened — and it is a signal that `LABEL_MAP` should be extended.
-
----
+> column. So if house.kg adds a field tomorrow, it lands in the dataset automatically,
+> just under a machine-generated name (e.g. `kol_vo_etazhey`). If you see a column not
+> listed above, that is what happened — and it is a signal that `LABEL_MAP` should be
+> extended.
+>
+> The converse also holds: `LABEL_MAP` carries a few entries (`deposit`, `pets_allowed`,
+> `year_built`, `wall_material`, `layout`, …) that **never fired on the full crawl** —
+> the site simply does not publish them. They are kept as a safety net, but there is no
+> such column in the data.
 
 ### 5.2 `users`
 
 Listing authors and review authors share the same `/user/<hash>` namespace, so this
 table is their **union** — a person who both posts ads and writes reviews is one row.
+
+Full crawl: **4,577 users** = 4,210 ad authors + 448 reviewers, of whom **81 do both**.
+Every one of them has a `registered_date`.
 
 | Field | Type | Description |
 |---|---|---|
@@ -417,7 +433,7 @@ agency is not a building). `kind` disambiguates if you concatenate them.
 | `name` | str | display name, original |
 | `url` | str | profile URL |
 | `pars_date` | str | when we scraped the profile |
-| `rating` | float | mean score, 1–5. **Null when the entity has no ratings at all** (~65% of companies) |
+| `rating` | float | mean score, 1–5. **Null when nobody has rated the entity** — which is most of them: only **33 of 179 companies (18%)** and **253 of 707 complexes (35%)** carry a rating |
 | `reviews_count` | int | **what the site claims** |
 | `reviews_scraped` | int | **how many rows actually exist** in `reviews` for this entity |
 | `reviews_truncated` | bool | true only when the site's hard 20-review cap was hit (§8.5, §8.6) |
@@ -475,17 +491,25 @@ or "от агента". This is simply **what the poster typed**.
 | `/user/<hash>` | a personal account | `owner` |
 | `/<slug>` (e.g. `/megapolis`) | a business account — the slug **is** the company profile | `company` |
 
-### Measured disagreement (1,000 listings)
+### Measured disagreement (full crawl, 25,473 listings)
 
-| Declared | Actual | Count |
-|---|---|---:|
-| от агента | company | 592 |
-| от собственника | owner | 365 |
-| **от агента** | **owner** | **43** ← agents with no business account |
-| от собственника | company | **0** |
+| Declared | Actual | Count | |
+|---|---|---:|---|
+| от агента | company | 19,586 | agrees |
+| от собственника | owner | 4,478 | agrees |
+| **от агента** | **owner** | **1,365** | agents with no business account |
+| **от собственника** | **company** | **43** | **a business account claiming to be a private owner** |
+| *(none)* | owner | 1 | the ad states no offer type |
 
-Both signals are stored, and `seller_mismatch` flags the disagreement. Note the
-asymmetry: **nobody claimed to be an owner while posting from a company account.**
+Both signals are stored, and `seller_mismatch` flags the disagreement — **1,408 ads
+(5.5%)** disagree with themselves.
+
+> **A caution about small samples.** On a 1,000-listing sample the last category was
+> **zero**, and an earlier draft of this document concluded there was an asymmetry:
+> "nobody claims to be an owner while posting from a company account." The full crawl
+> shows **43 of them**. The category is genuinely rare (0.17%), which is exactly why a
+> thousand rows could not see it — a useful lesson to hand to students before they
+> generalise from a subsample of this very dataset.
 
 ---
 
@@ -565,7 +589,15 @@ The site prints "2 месяца назад". Such a value decays — it is meani
 knowing when it was read. Both forms are stored: `*_raw` (original) and `*_date`
 (absolute, resolved against `pars_date`). **Use `*_date` for anything time-based.**
 
-### 8.8 🟢 There are no "likes"
+### 8.8 🔴 Never join `companies` and `complexes` on `slug` alone
+
+A slug can name **both** an agency and a residential complex — `diplomat` is both
+the agency «Дипломат» and the complex «Дипломат». Each table is internally correct,
+and every foreign key in the dataset is unambiguous, but a naive union of the two
+entity tables keyed on `slug` will fuse them. Key on `(kind, slug)` if you need a
+combined table.
+
+### 8.9 🟢 There are no "likes"
 
 house.kg publishes only a **view counter**. The share buttons (FB/VK/Telegram)
 carry no counts. If you need engagement, `views` is all there is.
@@ -576,7 +608,7 @@ carry no counts. If you need engagement, `views` is all there is.
 
 | Limitation | Detail |
 |---|---|
-| **Reviews capped at 20** | The site renders at most 20 reviews *anywhere* — on the ad page and on the entity profile alike. Its `?page=` pagination belongs to the company's **listings**, not its reviews, and returns the same 20; the JS bundle exposes only add/edit/delete endpoints. An agency with 38 reviews therefore yields 20. `reviews_count` vs `reviews_scraped` and `reviews_truncated` make this visible per entity. |
+| **Reviews capped at 20** | The site renders at most 20 reviews *anywhere* — on the ad page and on the entity profile alike. Its `?page=` pagination belongs to the company's **listings**, not its reviews, and returns the same 20; the JS bundle exposes only add/edit/delete endpoints. An agency with 38 reviews therefore yields 20. `reviews_count` vs `reviews_scraped` and `reviews_truncated` make this visible per entity. In practice the cap bit **only 1 of 886 entities** — almost nothing is lost. |
 | **No company owner** | Company profiles expose no user account, so companies cannot be linked to a person. |
 | **Regional sparsity** | ~92% of the board is Bishkek. Small regions have too few rows for reliable statistics. |
 | **Snapshot, not history** | Each crawl is a point-in-time snapshot. `views`, prices and `upped_date` change over time; re-crawl to build a time series (`house_kg_id` and `review_id` are stable, so versions can be diffed). |

@@ -71,17 +71,26 @@ class Validator:
         company_slugs = {c["slug"] for c in companies}
         complex_slugs = {c["slug"] for c in complexes}
 
-        # Companies and complexes each key on `slug`, but they live in different URL
-        # namespaces (/<slug> vs /jilie-kompleksy/<slug>), so the same string could
-        # in principle name both. That is safe while the tables are separate — the
-        # FK is disambiguated by `reviews.subject_type` — but it would silently merge
-        # two different entities for anyone who concatenates the tables on `slug`.
+        # Companies and complexes each key on `slug`, and they live in different URL
+        # namespaces (/<slug> vs /jilie-kompleksy/<slug>) — so the same string CAN
+        # name both, and does: the agency «Дипломат» and the complex «Дипломат» are
+        # both `diplomat`.
+        #
+        # This is NOT a defect: the tables are separate and every FK is unambiguous
+        # (listings.company_slug only ever points at companies; reviews carry
+        # subject_type). It is a warning rather than a failure because the data is
+        # sound — but anyone who concatenates the two entity tables on `slug` alone
+        # would silently merge an agency with a building, so it must be surfaced.
         collisions = company_slugs & complex_slugs
-        self._check(
-            "no slug collides between companies and complexes",
-            not collisions,
-            f"colliding={sorted(collisions)[:3]}" if collisions else "",
-        )
+        if collisions:
+            logger.warning(
+                "  [NOTE] %d slug(s) name BOTH a company and a complex: %s. "
+                "The tables are separate and all FKs stay unambiguous, but never "
+                "join companies and complexes on `slug` alone.",
+                len(collisions), sorted(collisions)[:5],
+            )
+        else:
+            logger.info("  [OK  ] no slug names both a company and a complex")
         user_ids = {u["user_id"] for u in users}
         listing_ids = {r["id"] for r in listings}
 
