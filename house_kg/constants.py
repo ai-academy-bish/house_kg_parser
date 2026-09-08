@@ -228,6 +228,9 @@ class Selectors:
     ADDED = ".added-span"
     UPPED = ".upped-span"
     VIEWS = ".view-count"
+    #: house.kg does publish a "saved to favourites" counter — on the detail page
+    #: and on the result card alike. It is not a share button.
+    FAVOURITES = ".favourite-count"
 
     # author / seller
     AUTHOR_BLOCK = "#block-user"

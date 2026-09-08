@@ -134,7 +134,7 @@ data/
                reviews.jsonl, photos.jsonl, snapshots.jsonl
     observations/<snapshot>.jsonl    one measurement of every live listing
     changes/<snapshot>.jsonl         one row per field that moved
-  photos/      image files (uuid4 names)
+  photos/      image files (uuid4 names, downloaded once per listing)
 hf_dataset/
   data/*.parquet              current-state subsets, rewritten each run
   data/observations/*.parquet appended: one file per snapshot

@@ -229,6 +229,7 @@ class Listing(Record):
     price_period: str  # total | month | day
 
     views: int | None
+    favourites: int | None
     posted_raw: str | None
     posted_date: str | None
     upped_raw: str | None

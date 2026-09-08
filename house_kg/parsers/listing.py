@@ -150,10 +150,11 @@ class ListingParser(BaseParser):
         }
 
     def _activity(self, soup: BeautifulSoup, now: datetime) -> dict[str, object]:
-        """Posted / bumped dates and the view counter.
+        """Posted / bumped dates, the view counter and the favourites counter.
 
-        There is no "likes" counter on house.kg — only views. What looks like likes
-        is a row of social share buttons with no count attached.
+        house.kg publishes both: `.view-count` and `.favourite-count` sit side by
+        side in the same block. The row of social share buttons next to them is the
+        thing that carries no count — it is not the favourites counter.
         """
         posted_raw = upped_raw = None
 
@@ -171,6 +172,7 @@ class ListingParser(BaseParser):
 
         return {
             "views": to_int(self.text_of(soup, Selectors.VIEWS)),
+            "favourites": to_int(self.text_of(soup, Selectors.FAVOURITES)),
             "posted_raw": posted_raw,
             "posted_date": self.dates.parse(posted_raw, now),
             "upped_raw": upped_raw,
