@@ -1,4 +1,14 @@
-"""Stage 1 — discover listing URLs.
+"""Stage 1 — sweep the result pages.
+
+This stage does double duty. It discovers listing URLs, as it always did, but it
+now also returns a full observation per card: price, views, favourites, bump and
+paid-promotion state all render on the card itself. That is what makes a repeat
+run cheap — the whole board is re-measured in ~2.6k page fetches, and detail
+pages are reserved for advertisements never seen before.
+
+The sweep is also the only way to learn what *disappeared*: a listing that no
+longer shows up in any stream has been sold or withdrawn, and nothing on the
+site announces that.
 
 The site is crawled per (deal × property type × region) stream rather than through
 `?region=all`, for two reasons:
@@ -17,6 +27,7 @@ from ..config import Config
 from ..constants import BASE_URL, DEALS, REGION_IDS_BY_NAME
 from ..http_client import HttpClient
 from ..logging_utils import ProgressTracker, get_logger
+from ..models import CardObservation
 from ..parsers import ResultsParser
 
 logger = get_logger(__name__)
@@ -44,6 +55,25 @@ class ListingRef:
     deal: str
     property_type: str
     region: str
+
+    @classmethod
+    def from_card(cls, card: CardObservation) -> ListingRef:
+        return cls(card.source_url, card.deal, card.type, card.region)
+
+
+@dataclass(slots=True)
+class Sweep:
+    """What one pass over the result pages found."""
+
+    cards: list[CardObservation]
+    pages_scanned: int
+    pages_expected: int = 0
+    #: Pages that returned nothing — a transport failure, not an empty stream.
+    pages_failed: int = 0
+
+    @property
+    def refs(self) -> list[ListingRef]:
+        return [ListingRef.from_card(c) for c in self.cards]
 
 
 class UrlCollector:
@@ -81,11 +111,12 @@ class UrlCollector:
         cap = self.config.scope.max_pages_per_stream
         return min(last, cap) if cap else last
 
-    def collect(self) -> list[ListingRef]:
-        """Walk every stream's pages and return de-duplicated listing refs.
+    def collect(self) -> Sweep:
+        """Walk every stream's pages and return one observation per live listing.
 
         Deduplication matters: a listing bumped mid-crawl can shift pages and be
-        served twice.
+        served twice. The first sighting wins, so a listing keeps the deal and
+        type of the stream that found it.
         """
         streams = self.streams()
         logger.info("scope: %d streams (deal × type × region)", len(streams))
@@ -113,38 +144,48 @@ class UrlCollector:
             total_estimate * 10,
         )
 
-        # 2) pull the URLs off every page
-        refs: list[ListingRef] = []
+        # 2) read every card off every page
+        cards: list[CardObservation] = []
         seen: set[str] = set()
         limit = self.config.scope.max_listings
+        scanned = 0
+        failed = 0
 
-        self.progress.track("urls", len(jobs), "collecting urls")
+        self.progress.track("urls", len(jobs), "sweeping result pages")
         with ThreadPoolExecutor(max_workers=self.config.http.workers) as pool:
-            futures = {
-                pool.submit(self._page_refs, stream, page): stream for stream, page in jobs
+            card_futures = {
+                pool.submit(self._page_cards, stream, page): stream for stream, page in jobs
             }
-            for future in as_completed(futures):
-                for ref in future.result():
-                    if ref.url not in seen:
-                        seen.add(ref.url)
-                        refs.append(ref)
+            for future in as_completed(card_futures):
+                page_cards = future.result()
+                scanned += 1
+                if page_cards is None:
+                    failed += 1
+                    self.progress.advance("urls")
+                    continue
+                for card in page_cards:
+                    if card.house_kg_id not in seen:
+                        seen.add(card.house_kg_id)
+                        cards.append(card)
                 self.progress.advance("urls")
-                if limit and len(refs) >= limit:
-                    for pending in futures:
+                if limit and len(cards) >= limit:
+                    for pending in card_futures:
                         pending.cancel()
                     break
 
         self.progress.complete("urls")
         if limit:
-            refs = refs[:limit]
-        logger.info("collected %d unique listing urls", len(refs))
-        return refs
+            cards = cards[:limit]
+        if failed:
+            logger.warning("%d of %d result pages could not be fetched", failed, len(jobs))
+        logger.info("swept %d pages -> %d unique live listings", scanned, len(cards))
+        return Sweep(
+            cards=cards, pages_scanned=scanned, pages_expected=len(jobs), pages_failed=failed
+        )
 
-    def _page_refs(self, stream: Stream, page: int) -> list[ListingRef]:
+    def _page_cards(self, stream: Stream, page: int) -> list[CardObservation] | None:
+        """None marks a page that could not be fetched, so it is not read as empty."""
         html = self.http.get_text(stream.page_url(page))
         if not html:
-            return []
-        return [
-            ListingRef(url, stream.deal, stream.property_type, stream.region)
-            for url in self.parser.listing_urls(html)
-        ]
+            return None
+        return self.parser.cards(html, stream.deal, stream.property_type, stream.region)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .config import Config
 from .crawler import Pipeline
-from .dataset import HFDatasetBuilder
+from .dataset import Bootstrapper, HFDatasetBuilder
 from .logging_utils import ProgressTracker, get_logger, setup_logging
 from .storage import Storage
 from .validate import Validator
@@ -26,6 +26,12 @@ def _load(args: argparse.Namespace) -> Config:
         config.photos.enabled = False
     if getattr(args, "no_progress", False):
         config.logging.progress = False
+    if getattr(args, "full", False):
+        config.refresh.detail_refresh = "all"
+    if getattr(args, "first_run", False):
+        config.dataset.is_first_run = True
+    if getattr(args, "no_push", False):
+        config.dataset.hub.push = False
     return config
 
 
@@ -35,7 +41,17 @@ def cmd_crawl(args: argparse.Namespace) -> int:
         config.log_dir, config.logging.level, config.logging.color, run_name="crawl"
     )
     logger.info("logging to %s", log_file)
-    Pipeline(config).run()
+    report = Pipeline(config, snapshot_id=args.snapshot_id).run()
+    # a scheduled run is judged by whether the sweep was complete, not by whether
+    # the process exited — an incomplete snapshot must not pass silently in CI
+    return 0 if report.complete else 2
+
+
+def cmd_pull(args: argparse.Namespace) -> int:
+    """Restore local crawl state from the published dataset."""
+    config = _load(args)
+    setup_logging(config.log_dir, config.logging.level, config.logging.color, run_name="pull")
+    Bootstrapper(config).run(force=args.force)
     return 0
 
 
@@ -74,15 +90,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    crawl = sub.add_parser("crawl", help="scrape listings, entities and photos")
+    crawl = sub.add_parser("crawl", help="take a snapshot of the board")
     crawl.add_argument("--limit", type=int, help="stop after N listings")
     crawl.add_argument("--workers", type=int, help="override HTTP workers")
     crawl.add_argument("--no-photos", action="store_true", help="skip photo downloads")
     crawl.add_argument("--no-progress", action="store_true", help="plain logs, no bars")
+    crawl.add_argument(
+        "--snapshot-id", help="snapshot label (default: today's date, e.g. 2026-09-08)"
+    )
+    crawl.add_argument(
+        "--full",
+        action="store_true",
+        help="re-read every detail page, not just new listings (~10x the requests)",
+    )
+    crawl.add_argument(
+        "--first-run",
+        action="store_true",
+        help="force baseline mode: do not diff against earlier snapshots",
+    )
     crawl.set_defaults(func=cmd_crawl)
+
+    pull = sub.add_parser(
+        "pull", help="restore local state from the published dataset (no photos)"
+    )
+    pull.add_argument(
+        "--force", action="store_true", help="overwrite local tables if present"
+    )
+    pull.set_defaults(func=cmd_pull)
 
     build = sub.add_parser("build", help="package the HuggingFace dataset")
     build.add_argument("--no-progress", action="store_true")
+    build.add_argument("--no-push", action="store_true", help="build locally, do not upload")
     build.set_defaults(func=cmd_build)
 
     validate = sub.add_parser("validate", help="check keys, foreign keys and photos")

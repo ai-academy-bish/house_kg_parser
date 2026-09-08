@@ -20,6 +20,46 @@ REVIEW_CAP: Final[int] = 20
 LISTINGS_PER_PAGE: Final[int] = 10
 
 # --------------------------------------------------------------------------
+# Time series
+# --------------------------------------------------------------------------
+
+#: Volatile listing fields compared between snapshots to raise a `changes` row.
+#: `views` and `favourites` are deliberately absent: they only ever grow, so
+#: tracking them would mark every listing "changed" on every run and drown the
+#: real signal. They are still recorded in `listing_observations`.
+TRACKED_LISTING_FIELDS: Final[tuple[str, ...]] = (
+    "price_usd",
+    "price_kgs",
+    "price_period",
+    "promo",
+)
+
+#: Paid promotion markers on a result card, as CSS class suffixes. Kept as an
+#: open list: the raw `promo` column stores whatever the site renders, so a new
+#: paid tier appears in the data instead of being silently dropped.
+PROMO_KINDS: Final[tuple[str, ...]] = ("vip", "premium", "top", "urgent", "color")
+
+#: Entity fields (companies / complexes) compared between snapshots.
+TRACKED_ENTITY_FIELDS: Final[tuple[str, ...]] = (
+    "name",
+    "rating",
+    "reviews_count",
+    "rating_5",
+    "rating_4",
+    "rating_3",
+    "rating_2",
+    "rating_1",
+)
+
+#: Change kinds written to the `changes` table.
+CHANGE_APPEARED: Final[str] = "appeared"
+CHANGE_DELISTED: Final[str] = "delisted"
+CHANGE_REAPPEARED: Final[str] = "reappeared"
+CHANGE_FIELD: Final[str] = "field_changed"
+CHANGE_BUMPED: Final[str] = "bumped"
+CHANGE_REVIEW_ADDED: Final[str] = "review_added"
+
+# --------------------------------------------------------------------------
 # Deals and property types
 # --------------------------------------------------------------------------
 
@@ -150,6 +190,26 @@ class Selectors:
     LISTING_CARD = ".listing"
     CARD_LINK = "p.title a[href], a[href*='/details/']"
     PAGINATION = ".pagination a"
+
+    # result-page card — everything that moves over time is already here, so a
+    # refresh run reads price, views, bump and promo state without ever fetching
+    # the detail page (~2.6k requests instead of ~25k + 230k photos).
+    CARD_PRICE_MAIN = ".listing-prices-block .sep.main .price"
+    CARD_PRICE_MAIN_ADD = ".listing-prices-block .sep.main .price-addition"
+    CARD_PRICE_UNIT = ".listing-prices-block .sep.addit .price"
+    CARD_PRICE_UNIT_ADD = ".listing-prices-block .sep.addit .price-addition"
+    CARD_INFO = ".additional-info .left-side"
+    CARD_DATE = ".additional-info .left-side > span:first-child"
+    CARD_BUMP_ICON = ".glyphicon-circle-arrow-up"
+    #: Selected by tooltip title, not by icon class: Font Awesome class names on
+    #: this site have changed at least once, the Russian tooltips have not.
+    CARD_VIEWS = '.additional-info span[title="Количество просмотров"]'
+    CARD_FAVORITES = '.additional-info span[title^="Количество добавлений"]'
+    CARD_PROMO = ".right-side .payed-services-button[class]"
+    CARD_OWNERSHIP = ".ownership"
+    CARD_TITLE = "p.title a"
+    CARD_ADDRESS = ".address"
+    CARD_COMPLEX = ".title-addition a[href]"
 
     # listing detail
     TITLE = "h1"

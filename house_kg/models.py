@@ -14,15 +14,30 @@ thousands of times over a full crawl, so they live in their own tables:
 
 A rating, by contrast, is strictly 1:1 with its entity, so it stays inline on
 Company/Complex — a separate `ratings` table would be a join for nothing.
+
+Repeated crawls add a time dimension on top of that, split three ways:
+
+    Listing      the *latest known state* of an advertisement, plus its lifecycle
+                 (first_seen / last_seen / is_active)
+    Observation  one measurement per (snapshot × listing) — the panel data
+    Change       one row per field that actually moved — the event log
+
+The split is deliberate. `Observation` answers "what was the price that week"
+without replaying anything; `Change` answers "what happened" without scanning a
+25k-row-per-week panel. Both are cheap: a snapshot of the whole board is ~2-3 MB.
 """
 
 from __future__ import annotations
 
 import hashlib
+import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .constants import REVIEW_CAP
+
+#: Namespace for deterministic listing ids (see `Listing.make_id`).
+LISTING_NAMESPACE = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
 
 
 @dataclass(slots=True)
@@ -163,13 +178,18 @@ class User(Record):
 
 @dataclass(slots=True)
 class Photo(Record):
-    """One downloaded image, linked back to its listing."""
+    """One downloaded image, linked back to its listing.
+
+    `snapshot_id` records the run that fetched it, which is what lets the Hub
+    upload ship only the new shards instead of re-embedding ~46 GB every time.
+    """
 
     foto_id: str
     listing_id: str
     house_kg_id: str
     file_name: str
     url: str
+    snapshot_id: str = ""
 
 
 @dataclass(slots=True)
@@ -180,6 +200,10 @@ class Listing(Record):
     site renders them. Characteristics parsed from `.info-row` are flattened into
     `attributes` and merged into the row on export, so a new site field is never
     dropped.
+
+    `id` is derived from `house_kg_id`, never random: the same advertisement must
+    keep the same id across every snapshot, or `photos.listing_id` breaks the
+    moment a listing is re-read on a later run.
     """
 
     id: str
@@ -232,6 +256,19 @@ class Listing(Record):
     foto_ids: list[str] = field(default_factory=list)
     attributes: dict[str, str] = field(default_factory=dict)
 
+    #: Set on first sight and never rewritten; `last_seen` moves with each run.
+    first_seen: str | None = None
+    last_seen: str | None = None
+    first_snapshot: str | None = None
+    last_snapshot: str | None = None
+    is_active: bool = True
+    delisted_snapshot: str | None = None
+
+    @staticmethod
+    def make_id(house_kg_id: str) -> str:
+        """Stable uuid for an advertisement — uuid5, so re-reading reproduces it."""
+        return str(uuid.uuid5(LISTING_NAMESPACE, house_kg_id))
+
     def to_dict(self) -> dict[str, Any]:
         """Flatten `attributes` into the row (one column per characteristic)."""
         row = asdict(self)
@@ -239,3 +276,145 @@ class Listing(Record):
         for key, value in attributes.items():
             row.setdefault(key, value)  # never clobber a core field
         return row
+
+
+@dataclass(slots=True)
+class CardObservation(Record):
+    """What one result-page card yields — a full observation, no detail fetch.
+
+    The card carries every field that moves between runs (price, views,
+    favourites, bump, paid promotion), so a refresh pass costs ~2.6k result pages
+    instead of ~25k detail pages plus a photo re-download.
+    """
+
+    house_kg_id: str
+    source_url: str
+    deal: str
+    type: str
+    region: str
+
+    price_usd: float | None = None
+    price_kgs: float | None = None
+    price_usd_raw: str | None = None
+    price_kgs_raw: str | None = None
+    price_period: str = "total"
+    price_usd_per_m2: float | None = None
+
+    views: int | None = None
+    favourites: int | None = None
+
+    #: The card shows either "поднято N назад" or the posting date — the bump
+    #: icon is what distinguishes them, so both are kept apart here.
+    upped_raw: str | None = None
+    upped_date: str | None = None
+    posted_raw: str | None = None
+    posted_date: str | None = None
+
+    #: Raw, sorted promotion markers ("top,vip"); "" when the seller paid for none.
+    promo: str = ""
+    is_vip: bool = False
+    is_premium: bool = False
+    is_top: bool = False
+    is_urgent: bool = False
+
+    #: The card's "Собственник" badge is a *paid* marker, so its absence does not
+    #: mean an agency. Recorded as-is; `seller_type` stays a detail-page field.
+    owner_badge: bool = False
+    title: str | None = None
+    address: str | None = None
+    complex_slug: str | None = None
+
+
+@dataclass(slots=True)
+class Observation(Record):
+    """One (snapshot × listing) measurement — the panel-data fact table.
+
+    Keyed by `obs_id` so re-running the same snapshot is idempotent: an
+    interrupted run resumes instead of duplicating rows.
+    """
+
+    snapshot_id: str
+    house_kg_id: str
+    observed_at: str
+
+    price_usd: float | None = None
+    price_kgs: float | None = None
+    price_period: str = "total"
+    price_usd_per_m2: float | None = None
+    views: int | None = None
+    favourites: int | None = None
+    upped_date: str | None = None
+    promo: str = ""
+    is_vip: bool = False
+    is_premium: bool = False
+    is_top: bool = False
+    is_urgent: bool = False
+    owner_badge: bool = False
+    is_active: bool = True
+    obs_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.obs_id:
+            self.obs_id = f"{self.snapshot_id}|{self.house_kg_id}"
+
+
+@dataclass(slots=True)
+class Change(Record):
+    """One recorded difference against the previous snapshot.
+
+    Long format — one row per changed field — so listings, companies, complexes
+    and reviews all share a single table and a single query shape.
+    """
+
+    snapshot_id: str
+    observed_at: str
+    entity_type: str  # listing | company | complex | review
+    entity_key: str
+    change_type: str  # appeared | delisted | field_changed | bumped | ...
+    field: str | None = None
+    old_value: str | None = None
+    new_value: str | None = None
+    prev_snapshot_id: str | None = None
+    change_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.change_id:
+            key = "|".join(
+                [
+                    self.snapshot_id,
+                    self.entity_type,
+                    self.entity_key,
+                    self.change_type,
+                    self.field or "",
+                ]
+            )
+            self.change_id = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
+
+@dataclass(slots=True)
+class Snapshot(Record):
+    """Metadata for one crawl run.
+
+    Without this table a run that died at 60% is indistinguishable from 40% of
+    the board being delisted overnight — `complete` is what makes a gap in
+    `listing_observations` interpretable.
+    """
+
+    snapshot_id: str
+    started_at: str
+    finished_at: str | None = None
+    mode: str = "refresh"  # baseline | refresh
+    complete: bool = False
+    scope_deals: str = ""
+    scope_types: str = ""
+    scope_regions: str = ""
+    pages_scanned: int = 0
+    listings_seen: int = 0
+    listings_new: int = 0
+    listings_changed: int = 0
+    listings_delisted: int = 0
+    listings_reappeared: int = 0
+    photos_new: int = 0
+    entities_changed: int = 0
+    reviews_new: int = 0
+    duration_seconds: float | None = None

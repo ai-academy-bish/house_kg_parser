@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from .constants import REVIEW_CAP
 from .logging_utils import get_logger
+from .models import Listing
 from .storage import Storage
 
 logger = get_logger(__name__)
@@ -37,12 +38,16 @@ class Validator:
         level("  [%s] %s %s", "OK  " if passed else "FAIL", name, detail)
 
     def run(self) -> bool:
-        listings = list(self.storage.listings.rows())
-        users = list(self.storage.users.rows())
-        companies = list(self.storage.companies.rows())
-        complexes = list(self.storage.complexes.rows())
+        # `latest()`, not `rows()`: these tables keep every version of a record, so
+        # the current state is the last row per key — `rows()` would report the
+        # history as duplicate primary keys.
+        listings = list(self.storage.listings.latest())
+        users = list(self.storage.users.latest())
+        companies = list(self.storage.companies.latest())
+        complexes = list(self.storage.complexes.latest())
         reviews = list(self.storage.reviews.rows())
         photos = list(self.storage.photos.rows())
+        snapshots = list(self.storage.snapshots.latest())
 
         if not listings:
             logger.error("no listings to validate")
@@ -65,6 +70,12 @@ class Validator:
         self._check(
             "review_id is a deterministic hash (not uuid4)",
             all(len(r["review_id"]) == 16 and "-" not in r["review_id"] for r in reviews),
+        )
+        # A random id would change on every re-read and silently orphan the photos
+        # of any listing crawled twice — the whole time series rests on this.
+        self._check(
+            "listing.id is derived from house_kg_id (reproducible across snapshots)",
+            all(r["id"] == Listing.make_id(r["house_kg_id"]) for r in listings),
         )
 
         logger.info("[bold]foreign keys[/]")
@@ -153,6 +164,69 @@ class Validator:
                 if declared and ("собственник" in declared) != (actual == "owner")
             ),
         )
+
+        logger.info("[bold]time series[/]")
+        self._check("snapshot_id unique", _unique(snapshots, "snapshot_id"))
+
+        snapshot_ids = {s["snapshot_id"] for s in snapshots}
+        listing_keys = {r["house_kg_id"] for r in listings}
+        store = self.storage.snapshot_store
+        observed_snapshots = store.snapshot_ids()
+
+        self._check(
+            "every observation partition has a snapshots row",
+            set(observed_snapshots) <= snapshot_ids,
+            f"orphans={sorted(set(observed_snapshots) - snapshot_ids)}",
+        )
+
+        # An observation without a listing row is normal *in the newest snapshot*:
+        # the card was read, then the detail fetch failed, and the next run retries
+        # it. In an older snapshot it never healed, so it is a real defect.
+        settled = observed_snapshots[:-1]
+        stale_orphans = sum(
+            1
+            for snapshot_id in settled
+            for key in store.load_observations(snapshot_id)
+            if key not in listing_keys
+        )
+        pending_orphans = sum(
+            1
+            for key in store.load_observations(observed_snapshots[-1])
+            if key not in listing_keys
+        ) if observed_snapshots else 0
+
+        self._check(
+            "every settled observation resolves to a listing",
+            not stale_orphans,
+            f"orphans={stale_orphans}",
+        )
+        if pending_orphans:
+            logger.warning(
+                "  [NOTE] %d observation(s) in the newest snapshot have no listing "
+                "row yet — their detail page failed and the next run will retry",
+                pending_orphans,
+            )
+
+        # A listing may only be observed as delisted once: after that it stops
+        # appearing entirely, so a second delisting means the active-set logic drifted.
+        delisted_twice: Counter[str] = Counter()
+        for snapshot_id in observed_snapshots:
+            for key, row in store.load_observations(snapshot_id).items():
+                if not row.get("is_active", True):
+                    delisted_twice[key] += 1
+        repeats = [k for k, n in delisted_twice.items() if n > 1]
+        self._check(
+            "no listing is delisted twice", not repeats, f"repeats={len(repeats)}"
+        )
+
+        incomplete = [s["snapshot_id"] for s in snapshots if not s.get("complete")]
+        if incomplete:
+            logger.warning(
+                "  [NOTE] %d snapshot(s) are flagged incomplete: %s. Their "
+                "observations are partial and they record no delistings — treat "
+                "them as gaps, not as market movements.",
+                len(incomplete), ", ".join(incomplete[:5]),
+            )
 
         logger.info("[bold]review completeness[/]")
         entities = companies + complexes

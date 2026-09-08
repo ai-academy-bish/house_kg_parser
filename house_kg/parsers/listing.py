@@ -7,7 +7,6 @@ comments record *why*, because the naive version of each looks correct and is no
 from __future__ import annotations
 
 import re
-import uuid
 from datetime import datetime
 
 from bs4 import BeautifulSoup, Tag
@@ -41,9 +40,10 @@ class ListingParser(BaseParser):
             else declared_owner != (seller["seller_type"] == "owner")
         )
 
+        house_kg_id = url.rstrip("/").split("/details/")[-1]
         return Listing(
-            id=str(uuid.uuid4()),
-            house_kg_id=url.rstrip("/").split("/details/")[-1],
+            id=Listing.make_id(house_kg_id),
+            house_kg_id=house_kg_id,
             source_url=url,
             pars_date=now.isoformat(),
             deal=deal,

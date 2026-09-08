@@ -30,7 +30,7 @@ define banner
 	@printf "$(RESET)\n"
 endef
 
-.PHONY: help setup login parsing_run make_hf_dataset validate clean lint test
+.PHONY: help setup login parsing_run snapshot pull full_refresh make_hf_dataset validate clean lint test
 
 help: ## Show this help
 	$(call banner,command reference)
@@ -42,12 +42,17 @@ help: ## Show this help
 	@printf "\n$(BOLD)Variables:$(RESET)\n"
 	@printf "  $(YELLOW)%-18s$(RESET) %s\n" "CONFIG" "path to the YAML config (default: config.yaml)"
 	@printf "  $(YELLOW)%-18s$(RESET) %s\n" "LIMIT"  "stop after N listings (e.g. make parsing_run LIMIT=100)"
+	@printf "  $(YELLOW)%-18s$(RESET) %s\n" "SNAPSHOT" "snapshot label (default: today, e.g. SNAPSHOT=2026-09-08)"
+	@printf "  $(YELLOW)%-18s$(RESET) %s\n" "FORCE"  "make pull FORCE=1 — overwrite local tables"
 	@printf "\n$(BOLD)Typical flow:$(RESET)\n"
 	@printf "  $(DIM)1.$(RESET) make $(GREEN)setup$(RESET)             $(DIM)# create venv, install deps$(RESET)\n"
 	@printf "  $(DIM)2.$(RESET) make $(GREEN)login$(RESET)             $(DIM)# HuggingFace token (only if pushing)$(RESET)\n"
 	@printf "  $(DIM)3.$(RESET) make $(GREEN)parsing_run$(RESET)       $(DIM)# scrape (resumable — safe to re-run)$(RESET)\n"
 	@printf "  $(DIM)4.$(RESET) make $(GREEN)validate$(RESET)          $(DIM)# check keys, FKs, photos, prices$(RESET)\n"
 	@printf "  $(DIM)5.$(RESET) make $(GREEN)make_hf_dataset$(RESET)   $(DIM)# build parquet subsets (+ push)$(RESET)\n\n"
+	@printf "$(BOLD)Then, on a schedule:$(RESET)\n"
+	@printf "  make $(GREEN)snapshot$(RESET)              $(DIM)# crawl + validate + publish one dated snapshot$(RESET)\n"
+	@printf "  $(DIM)(set$(RESET) dataset.is_first_run: false $(DIM)in the config after the first run)$(RESET)\n\n"
 
 setup: ## Create the virtualenv (uv) and install dependencies
 	$(call banner,setup)
@@ -67,12 +72,28 @@ login: ## Authenticate with HuggingFace (hf auth login)
 	@$(VENV)/bin/hf auth login
 	@printf "\n$(GREEN)$(BOLD)✓ logged in$(RESET)\n\n"
 
-parsing_run: ## Scrape house.kg (resumable; LIMIT=N for a smaller run)
+parsing_run: ## Take a snapshot of the board (resumable; LIMIT=N for a smaller run)
 	$(call banner,parsing run)
 	@printf "$(DIM)config: $(CONFIG)$(RESET)\n"
 	@printf "$(DIM)Interrupt safely with Ctrl-C — re-running resumes where it stopped.$(RESET)\n\n"
-	@$(PY) -m house_kg.cli --config $(CONFIG) crawl $(if $(LIMIT),--limit $(LIMIT))
+	@$(PY) -m house_kg.cli --config $(CONFIG) crawl $(if $(LIMIT),--limit $(LIMIT)) $(if $(SNAPSHOT),--snapshot-id $(SNAPSHOT))
 	@printf "\n$(GREEN)$(BOLD)✓ crawl finished$(RESET) — next: $(CYAN)make validate$(RESET)\n\n"
+
+snapshot: ## One scheduled run end to end: crawl -> validate -> build & push
+	$(call banner,scheduled snapshot)
+	@$(PY) -m house_kg.cli --config $(CONFIG) crawl $(if $(SNAPSHOT),--snapshot-id $(SNAPSHOT))
+	@$(PY) -m house_kg.cli --config $(CONFIG) validate || true
+	@$(PY) -m house_kg.cli --config $(CONFIG) build
+	@printf "\n$(GREEN)$(BOLD)✓ snapshot published$(RESET)\n\n"
+
+full_refresh: ## Re-read every detail page too (~10x requests; run monthly)
+	$(call banner,full refresh)
+	@$(PY) -m house_kg.cli --config $(CONFIG) crawl --full $(if $(SNAPSHOT),--snapshot-id $(SNAPSHOT))
+
+pull: ## Restore local state from the published dataset (tables only, no photos)
+	$(call banner,restore state)
+	@printf "$(DIM)Needed only when this machine lost data/ — the Hub is the backup.$(RESET)\n\n"
+	@$(PY) -m house_kg.cli --config $(CONFIG) pull $(if $(FORCE),--force)
 
 validate: ## Check primary keys, foreign keys, photos and price semantics
 	$(call banner,validate)

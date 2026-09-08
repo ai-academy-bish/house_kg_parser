@@ -114,6 +114,38 @@ class ResolvedStorage:
 
 
 @dataclass(slots=True)
+class RefreshConfig:
+    """How a repeat run re-reads the board.
+
+    The default is the cheap path: every live listing is re-measured from its
+    result card, and detail pages are fetched only for advertisements never seen
+    before. `detail_refresh: all` forces a full re-read of every detail page —
+    worth running occasionally to pick up edited descriptions and characteristics,
+    but ~10x the requests.
+    """
+
+    #: "new" = detail pages for unseen listings only; "all" = re-read everything.
+    detail_refresh: str = "new"
+    #: Companies and complexes are few (~900) and their ratings move, so they are
+    #: re-read in full on every run.
+    refresh_entities: bool = True
+    #: User profiles change slowly and there are ~4.5k of them; off by default.
+    refresh_users: bool = False
+    #: Refuse to record delistings when a sweep saw less than this share of the
+    #: previous snapshot. A crawl that died at 60% must never be published as
+    #: 40% of the board going off-market overnight.
+    min_completeness: float = 0.9
+
+    def __post_init__(self) -> None:
+        if self.detail_refresh not in ("new", "all"):
+            raise ValueError(
+                f"refresh.detail_refresh must be 'new' or 'all', got {self.detail_refresh!r}"
+            )
+        if not 0.0 <= self.min_completeness <= 1.0:
+            raise ValueError("refresh.min_completeness must be between 0 and 1")
+
+
+@dataclass(slots=True)
 class HubConfig:
     """HuggingFace Hub push settings."""
 
@@ -137,6 +169,10 @@ class DatasetConfig:
     #: set stays loadable without a repo full of loose files.
     include_photos: bool = True
     max_shard_size: str = "500MB"
+    #: True builds the repository from scratch (snapshot #1, everything is "new").
+    #: False appends: only unpublished partitions are uploaded, and local state is
+    #: restored from the Hub first if this machine has lost it.
+    is_first_run: bool = True
     hub: HubConfig = field(default_factory=HubConfig)
 
 
@@ -160,6 +196,7 @@ class Config:
     scope: ScopeConfig = field(default_factory=ScopeConfig)
     http: HttpConfig = field(default_factory=HttpConfig)
     photos: PhotoConfig = field(default_factory=PhotoConfig)
+    refresh: RefreshConfig = field(default_factory=RefreshConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -182,6 +219,7 @@ class Config:
             scope=ScopeConfig(**(raw.get("scope") or {})),
             http=HttpConfig(**(raw.get("http") or {})),
             photos=PhotoConfig(**(raw.get("photos") or {})),
+            refresh=RefreshConfig(**(raw.get("refresh") or {})),
             storage=StorageConfig(**(raw.get("storage") or {})),
             dataset=DatasetConfig(hub=hub, **(raw.get("dataset") or {})),
             logging=LoggingConfig(**(raw.get("logging") or {})),

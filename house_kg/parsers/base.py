@@ -40,3 +40,25 @@ class BaseParser:
         """Text of the first match, or None."""
         el = node.select_one(selector)  # type: ignore[attr-defined]
         return el.get_text(" ", strip=True) if el else None
+
+    @staticmethod
+    def attr(node: object, name: str) -> str | None:
+        """One attribute as a plain string.
+
+        bs4 types multi-valued attributes (`class`, `rel`) as a list, so every
+        caller would otherwise have to narrow the union by hand.
+        """
+        if node is None:
+            return None
+        value = node.get(name)  # type: ignore[attr-defined]
+        if isinstance(value, list):
+            return " ".join(value) or None
+        return value or None
+
+    @staticmethod
+    def classes(node: object) -> list[str]:
+        """The element's CSS classes, always as a list."""
+        value = node.get("class")  # type: ignore[attr-defined]
+        if value is None:
+            return []
+        return list(value) if isinstance(value, list) else str(value).split()

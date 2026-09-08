@@ -61,6 +61,32 @@ photos:
   max_per_listing: null   # null = download all (~9 per listing on average)
 
 # ---------------------------------------------------------------------------
+# Repeat runs
+# ---------------------------------------------------------------------------
+# Each run is a dated *snapshot*. The result pages already carry price, views,
+# favourites, the bump marker and the paid-promotion badges, so re-measuring the
+# whole board costs ~2.6k page fetches — detail pages are spent only on listings
+# never seen before (~10% of the board in a typical week).
+refresh:
+  # "new" — detail pages for unseen listings only (the cheap, weekly mode).
+  # "all" — re-read every detail page; ~10x the requests, but picks up edited
+  #         descriptions and characteristics. Worth running monthly.
+  detail_refresh: new
+
+  # Companies and complexes are few (~900) and their ratings and reviews move,
+  # so they are re-read in full every run and updates replace current state.
+  refresh_entities: true
+
+  # ~4 500 user profiles that rarely change — off by default.
+  refresh_users: false
+
+  # A listing that vanishes from the board is recorded as delisted. Refuse that
+  # inference when the sweep saw less than this share of the previous snapshot:
+  # a crawl that died at 60% must never be published as 40% of the board selling
+  # overnight. The snapshot is flagged incomplete instead.
+  min_completeness: 0.9
+
+# ---------------------------------------------------------------------------
 # Where scraped data lands (relative to this file)
 # ---------------------------------------------------------------------------
 storage:
@@ -79,9 +105,16 @@ dataset:
   # size, rather than shipped as ~230k loose files.
   max_shard_size: 500MB
 
+  # true  — build the repository from scratch: this run is snapshot #1 and
+  #         nothing is diffed against earlier data.
+  # false — append: only new partitions are uploaded, and `house-kg pull`
+  #         can restore local state if this machine lost it.
+  # Set this to false after the first successful run.
+  is_first_run: true
+
   hub:
     push: true             # true -> upload after building
-    repo_id: aiacademy-kg/house_kg_full_dataset           # e.g. "your-username/house-kg"
+    repo_id: aiacademy-kg/house_kg_full_dataset_frames           # e.g. "your-username/house-kg"
     private: false
     token_env: HF_TOKEN     # token comes from the env / `hf auth login`
 

@@ -9,3 +9,5 @@ data/
 hf_dataset/
 .ruff_cache/
 house_kg.egg-info/
+*_dataset/
+*_cache/
