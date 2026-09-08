@@ -110,7 +110,7 @@ dataset:
   # false — append: only new partitions are uploaded, and `house-kg pull`
   #         can restore local state if this machine lost it.
   # Set this to false after the first successful run.
-  is_first_run: true
+  is_first_run: false
 
   hub:
     push: true             # true -> upload after building
